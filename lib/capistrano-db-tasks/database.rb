@@ -106,14 +106,7 @@ module Database
     def initialize(cap_instance)
       super(cap_instance)
       puts "Loading remote database config"
-      @cap.within @cap.current_path do
-        @cap.with rails_env: @cap.fetch(:rails_env) do
-          dirty_config_content = @cap.capture(:rails, "runner \"puts '#{DBCONFIG_BEGIN_FLAG}' + ActiveRecord::Base.connection.instance_variable_get(:@config).to_yaml + '#{DBCONFIG_END_FLAG}'\"", '2>/dev/null')
-          # Remove all warnings, errors and artefacts produced by bunlder, rails and other useful tools
-          config_content = dirty_config_content.match(/#{DBCONFIG_BEGIN_FLAG}(.*?)#{DBCONFIG_END_FLAG}/m)[1]
-          @config = YAML.load(config_content).each_with_object({}) { |(k, v), h| h[k.to_s] = v }
-        end
-      end
+      @config = load_config
     end
 
     def dump
@@ -150,18 +143,44 @@ module Database
     def db_dump_dir
       @cap.fetch(:db_dump_dir) || "#{@cap.current_path}/db"
     end
+
+    def load_config_from_rails
+      @cap.within @cap.current_path do
+        @cap.with rails_env: @cap.fetch(:rails_env) do
+          dirty_config_content = @cap.capture(:rails, "runner \"puts '#{DBCONFIG_BEGIN_FLAG}' + ActiveRecord::Base.connection.instance_variable_get(:@config).to_yaml + '#{DBCONFIG_END_FLAG}'\"", '2>/dev/null')
+          # Remove all warnings, errors and artefacts produced by bunlder, rails and other useful tools
+          config_content = dirty_config_content.match(/#{DBCONFIG_BEGIN_FLAG}(.*?)#{DBCONFIG_END_FLAG}/m)[1]
+          YAML.load(config_content).each_with_object({}) { |(k, v), h| h[k.to_s] = v }
+        end
+      end
+    end
+
+    def load_config_from_env(env_config)
+      remote_env_file = @cap.fetch(:db_env_file) || '.env'
+      vars = env_config.values.join('|')
+
+      # Exporting them ensures that they're actually in the env and not just noise in the file.
+      env = "set -o allexport; source #{shared_path}/#{remote_env_file}; set +o allexport && env | egrep \"#{vars}\""
+      remote_vars = @cap.capture(env).split
+      remote_config = remote_vars.reduce({}) do |hsh, elem|
+        k, v = elem.split('=')
+        hsh[k] = v
+        hsh
+      end
+      env_config.reduce({}) { |hsh, (k, v)| hsh[k.to_s] = remote_config[v]; hsh}
+    end
+
+    def load_config
+      env_config = @cap.fetch(:db_config_from_env)
+      env_config ? load_config_from_env(env_config) : load_config_from_rails
+    end
   end
 
   class Local < Base
     def initialize(cap_instance)
       super(cap_instance)
       puts "Loading local database config"
-      command = "#{Dir.pwd}/bin/rails runner \"puts '#{DBCONFIG_BEGIN_FLAG}' + ActiveRecord::Base.connection.instance_variable_get(:@config).to_yaml + '#{DBCONFIG_END_FLAG}'\""
-      stdout, status = Open3.capture2(command)
-      raise "Error running command (status=#{status}): #{command}" if status != 0
-
-      config_content = stdout.match(/#{DBCONFIG_BEGIN_FLAG}(.*?)#{DBCONFIG_END_FLAG}/m)[1]
-      @config = YAML.load(config_content).each_with_object({}) { |(k, v), h| h[k.to_s] = v }
+      @config = load_config
     end
 
     # cleanup = true removes the mysqldump file after loading, false leaves it in db/
@@ -194,6 +213,24 @@ module Database
       result = system cmd
       @cap.error "Failed to execute the local command: #{cmd}" unless result
       result
+    end
+
+    def load_config_from_rails
+      command = "#{Dir.pwd}/bin/rails runner \"puts '#{DBCONFIG_BEGIN_FLAG}' + ActiveRecord::Base.connection.instance_variable_get(:@config).to_yaml + '#{DBCONFIG_END_FLAG}'\""
+      stdout, status = Open3.capture2(command)
+      raise "Error running command (status=#{status}): #{command}" if status != 0
+
+      config_content = stdout.match(/#{DBCONFIG_BEGIN_FLAG}(.*?)#{DBCONFIG_END_FLAG}/m)[1]
+      YAML.load(config_content).each_with_object({}) { |(k, v), h| h[k.to_s] = v }
+    end
+
+    def load_config_from_env(env_config)
+      env_config.reduce({}) { |hsh, (k, v)| hsh[k.to_s] = ENV[v]; hsh}
+    end
+
+    def load_config
+      env_config = @cap.fetch(:db_config_from_env)
+      env_config ? load_config_from_env(env_config) : load_config_from_rails
     end
   end
 

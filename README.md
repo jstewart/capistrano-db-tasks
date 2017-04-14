@@ -55,6 +55,21 @@ set :disallow_pushing, true
 
 # if you prefer bzip2/unbzip2 instead of gzip
 set :compressor, :bzip2
+
+# If you're not using Rails, you can configure via ENV as well.
+# This is a mapping between configuration variable to ENV_VARIABLE
+set :db_config_from_env, {adapter:  'DB_DRIVER',
+                          host:     'DB_SERVER'
+                          username: 'DB_USER',
+                          password: 'DB_PASSWORD',
+                          socket:   'DB_SOCKET',
+                          database: 'DB_DATABASE',
+                          port:     'DB_PORT'}
+
+# the remote .env file to pull configuration information from.
+# The local .env file is handled by the dotenv gem
+# this is in the shared_path, and defaults to .env
+set :db_env_file, '.env'
 ```
 
 Add to .gitignore
